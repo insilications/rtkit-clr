@@ -151,6 +151,9 @@ static bool canary_demote_root = FALSE;
 /* Demote unknown processes? */
 static bool canary_demote_unknown = FALSE;
 
+/* Allowed missed cheeps */
+static unsigned canary_missed_cheeps_allowed = 2;
+
 /* Log to stderr? */
 static bool log_stderr = FALSE;
 
@@ -1562,6 +1565,7 @@ static void* watchdog_thread(void *data) {
         };
         struct timespec last_cheep, now;
         struct pollfd pollfd[_POLLFD_MAX];
+        int allowed_misses;
 
         assert(canary_fd >= 0);
         assert(quit_fd >= 0);
@@ -1578,6 +1582,8 @@ static void* watchdog_thread(void *data) {
 
         assert_se(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
         last_cheep = now;
+
+        allowed_misses = canary_missed_cheeps_allowed;
 
         syslog(LOG_DEBUG, "Watchdog thread running.\n");
 
@@ -1619,18 +1625,34 @@ static void* watchdog_thread(void *data) {
                         continue;
                 }
 
+                /* Just checking the time elapsed since the last_cheep causes problems when the
+                 * system resumes from sleep. Processes then get demoted for no reason.
+                 * There doesn't seem to be an easy if(system_just_woke_up) check, but maybe
+                 * allowing a couple of missed cheeps will work because when resuming it should
+                 * only miss one of them.
+                 * This has the downside of possibly doubling the time until action is taken
+                 * when the canary really is starving.
+                 */
                 if (TIMESPEC_MSEC(last_cheep) + canary_watchdog_msec <= TIMESPEC_MSEC(now)) {
-                        last_cheep = now;
-                        syslog(LOG_WARNING, "The canary thread is apparently starving. Taking action.\n");
-                        refuse_until = (uint32_t) now.tv_sec + canary_refusal_sec;
-                        __sync_synchronize();
+                        if(allowed_misses) {
+                                syslog(LOG_WARNING, "The canary thread missed a cheep. Not taking action yet\n");
+                                allowed_misses--;
+                        } else {
+                                last_cheep = now;
+                                syslog(LOG_WARNING, "The canary thread is apparently starving. Taking action.\n");
+                                refuse_until = (uint32_t) now.tv_sec + canary_refusal_sec;
+                                __sync_synchronize();
 
-                        if (canary_demote_unknown)
-                                reset_all();
-                        else
-                                reset_known();
-                        continue;
+                                if (canary_demote_unknown)
+                                        reset_all();
+                                else
+                                        reset_known();
+                                continue;
+                        }
                 }
+
+                /* If it gets here then a good cheep was received, so reset allowed misses */
+                allowed_misses = canary_missed_cheeps_allowed;
         }
 
         return NULL;
