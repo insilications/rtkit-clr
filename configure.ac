@@ -113,6 +113,7 @@ CC="$PTHREAD_CC"
 AC_SEARCH_LIBS([sched_setscheduler], [rt])
 AC_SEARCH_LIBS([mq_open], [rt])
 AC_SEARCH_LIBS([cap_init], [cap])
+AC_SEARCH_LIBS([mq_getattr], [rt])
 
 PKG_CHECK_MODULES(DBUS, dbus-1)
 
